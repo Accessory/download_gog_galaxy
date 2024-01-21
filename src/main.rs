@@ -1,13 +1,12 @@
-use std::{
-    fs::{self, File},
-    io::{Read, Write},
-    path::Path,
-    process::ExitCode,
-};
+use std::{path::Path, process::ExitCode};
 
 use clap::Parser;
 use indicatif::ProgressBar;
 use md5::Digest;
+use tokio::{
+    fs::{self, File},
+    io::{AsyncReadExt, AsyncWriteExt},
+};
 
 use crate::{configuration::Configuration, models::DownloadLinks, utils::encode_hex};
 
@@ -15,7 +14,8 @@ mod configuration;
 mod models;
 mod utils;
 
-fn main() -> ExitCode {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     dotenvy::dotenv().ok();
     const URL: &str =
         "https://remote-config.gog.com/components/webinstaller?component_version=2.0.0";
@@ -27,7 +27,7 @@ fn main() -> ExitCode {
     println!("Configutration:");
     println!("{}", &config);
 
-    let result = reqwest::blocking::get(URL);
+    let result = reqwest::get(URL).await;
 
     let response = match result {
         Ok(response) => response,
@@ -38,7 +38,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let download_links: DownloadLinks = match response.json() {
+    let download_links: DownloadLinks = match response.json().await {
         Ok(json) => json,
         Err(err) => {
             println!("Failed to parse the download options.");
@@ -71,14 +71,14 @@ fn main() -> ExitCode {
 
     if !config.r#override && download_path.exists() {
         println!("File already exists.");
-        return ExitCode::from(0);
+        return ExitCode::SUCCESS;
     }
 
     if config.r#override && download_path.exists() {
         println!("File will be overriden.");
     }
 
-    let mut download_response = match reqwest::blocking::get(download_url) {
+    let mut download_response = match reqwest::get(download_url).await {
         Ok(json) => json,
         Err(err) => {
             println!("Failed to download the gog client from {}.", download_url);
@@ -87,13 +87,13 @@ fn main() -> ExitCode {
         }
     };
 
-    if let Err(err) = fs::create_dir_all(config.download_path) {
+    if let Err(err) = fs::create_dir_all(config.download_path).await {
         println!("Failed to create the download dir.");
         println!("Error: {}", err);
         return ExitCode::from(6);
     }
 
-    let mut download_file = match File::create(&download_path) {
+    let mut download_file = match File::create(&download_path).await {
         Ok(file) => file,
         Err(err) => {
             println!("Failed to create file at download path.");
@@ -108,17 +108,21 @@ fn main() -> ExitCode {
     let mut bar = ProgressBar::new(download_size);
 
     loop {
-        let read_result = download_response.read(&mut buffer);
+        let read_result = download_response.chunk().await;
 
-        let read = match read_result {
+        let continue_reading:bool = match read_result {
             Ok(read) => {
-                if let Err(write_err) = download_file.write(&buffer[0..read]) {
-                    println!("Failed to write data to file.");
-                    println!("Error: {}", write_err);
-                    return ExitCode::from(9);
+                if let Some(bytes) = read {
+                    if let Err(write_err) = download_file.write(&bytes).await {
+                        println!("Failed to write data to file.");
+                        println!("Error: {}", write_err);
+                        return ExitCode::from(9);
+                    }
+                    bar.inc(bytes.len() as u64);
+                    true
+                } else {
+                    false
                 }
-                bar.inc(read as u64);
-                read
             }
             Err(err) => {
                 println!("Failed to download file");
@@ -127,13 +131,13 @@ fn main() -> ExitCode {
             }
         };
 
-        if read == 0 {
+        if !continue_reading {
             bar.finish();
             break;
         }
     }
 
-    if let Err(err) = download_file.sync_all() {
+    if let Err(err) = download_file.sync_all().await {
         println!("Failed to sync file with filesystem.");
         println!("Error: {}", err);
         return ExitCode::from(11);
@@ -141,10 +145,13 @@ fn main() -> ExitCode {
 
     println!("Download successfully completed!");
 
+    if config.skip_verification{
+        return ExitCode::SUCCESS;
+    }
+
     println!("Verifing Download.");
 
-
-    let mut hash_file = match File::open(download_path) {
+    let mut hash_file = match File::open(download_path).await {
         Ok(file) => file,
         Err(err) => {
             println!("Failed to open file for verification!");
@@ -156,12 +163,12 @@ fn main() -> ExitCode {
     let mut hasher = md5::Md5::new();
     bar = ProgressBar::new(download_size);
     loop {
-        let read = match hash_file.read(&mut buffer) {
+        let read = match hash_file.read(&mut buffer).await {
             Ok(read) => {
                 hasher.update(&buffer[0..read]);
                 bar.inc(read as u64);
                 read
-            },
+            }
             Err(err) => {
                 println!("Failed to read downloaded file!");
                 println!("Error: {}", err);
@@ -177,12 +184,14 @@ fn main() -> ExitCode {
 
     let hash = hasher.finalize();
     let hash_hex = encode_hex(&hash);
-    
+
     if &hash_hex != download_hash {
-        println!("MD5-Hash differs between presumed({download_hash}) and downloaded({hash_hex}) file!");
+        println!(
+            "MD5-Hash differs between presumed({download_hash}) and downloaded({hash_hex}) file!"
+        );
         return ExitCode::from(15);
     }
 
     println!("Verification successful!");
-    ExitCode::from(0)
+    ExitCode::SUCCESS
 }

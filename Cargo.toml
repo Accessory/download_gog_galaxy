@@ -6,10 +6,18 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-reqwest ={ version = "0", features = ["blocking", "json"]}
+tokio = { version = "1", features = ["full"] }
+reqwest ={ version = "0", features = ["json", "cookies", "brotli", "gzip"]}
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 indicatif = "0"
 md-5 = {version = "0"}
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
