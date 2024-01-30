@@ -24,7 +24,7 @@ async fn main() -> ExitCode {
 
     let config = Configuration::parse();
 
-    println!("Configutration:");
+    println!("Configuration:");
     println!("{}", &config);
 
     let result = reqwest::get(URL).await;
@@ -103,8 +103,6 @@ async fn main() -> ExitCode {
     };
 
     println!("Starting download!");
-    let mut buffer: [u8; 4096] = [0u8; 4096];
-
     let mut bar = ProgressBar::new(download_size);
 
     loop {
@@ -162,6 +160,7 @@ async fn main() -> ExitCode {
 
     let mut hasher = md5::Md5::new();
     bar = ProgressBar::new(download_size);
+    let mut buffer: [u8; 4096] = [0u8; 4096];
     loop {
         let read = match hash_file.read(&mut buffer).await {
             Ok(read) => {
